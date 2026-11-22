@@ -1,193 +1,205 @@
 package com.soundmanhunt.core;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 public class PartyManager {
 
     private final SoundManhuntPlugin plugin;
-    private final Map<UUID, Party> partiesByLeader = new HashMap<>();
+    private final Map<UUID, Set<UUID>> parties = new HashMap<>();
     private final Map<UUID, UUID> playerToLeader = new HashMap<>();
-    private final Map<UUID, UUID> pendingInvites = new HashMap<>();
-    private final Map<UUID, MatchSession> activeMatchesByPlayer = new HashMap<>();
-
-    public static class Party {
-        private final UUID leader;
-        private final Set<UUID> members = new LinkedHashSet<>();
-        private int huntersCount = 1;
-
-        public Party(UUID leader) {
-            this.leader = leader;
-            this.members.add(leader);
-        }
-
-        public UUID getLeader() {
-            return leader;
-        }
-
-        public Set<UUID> getMembers() {
-            return members;
-        }
-
-        public int getHuntersCount() {
-            return huntersCount;
-        }
-
-        public void setHuntersCount(int huntersCount) {
-            this.huntersCount = Math.max(1, Math.min(10, huntersCount));
-        }
-    }
+    private final Map<UUID, String> playerArena = new HashMap<>();
+    private final Map<UUID, MatchSession> activeSessions = new HashMap<>();
 
     public PartyManager(SoundManhuntPlugin plugin) {
         this.plugin = plugin;
     }
 
-    public Party getPartyOf(UUID playerId) {
-        UUID leader = playerToLeader.get(playerId);
-        return leader != null ? partiesByLeader.get(leader) : null;
-    }
-
     public void createParty(Player leader) {
-        if (getPartyOf(leader.getUniqueId()) != null) {
-            leader.sendMessage("§cYa estas en una party.");
+        UUID leaderId = leader.getUniqueId();
+        if (playerToLeader.containsKey(leaderId)) {
+            leader.sendMessage("§cYa perteneces a una party. Usa §e/party salir §cprimero.");
             return;
         }
-        Party party = new Party(leader.getUniqueId());
-        partiesByLeader.put(leader.getUniqueId(), party);
-        playerToLeader.put(leader.getUniqueId(), leader.getUniqueId());
-        leader.sendMessage("§aParty creada. Usa §e/party invitar <jugador> §ay §e/party modo <1-10>§a.");
+        Set<UUID> members = new HashSet<>();
+        members.add(leaderId);
+        parties.put(leaderId, members);
+        playerToLeader.put(leaderId, leaderId);
+        leader.sendMessage("§aParty creada. Usa §e/party invitar <jugador> §ay §e/sala <manh1|manh2|manh3>§a.");
     }
 
     public void invitePlayer(Player leader, Player target) {
-        Party party = partiesByLeader.get(leader.getUniqueId());
-        if (party == null) {
-            leader.sendMessage("§cNo eres lider de ninguna party.");
+        UUID leaderId = leader.getUniqueId();
+        if (!parties.containsKey(leaderId)) {
+            createParty(leader);
+        }
+        UUID targetId = target.getUniqueId();
+        if (playerToLeader.containsKey(targetId)) {
+            leader.sendMessage("§c" + target.getName() + " ya está en una party.");
             return;
         }
-        if (getPartyOf(target.getUniqueId()) != null) {
-            leader.sendMessage("§c" + target.getName() + " ya esta en una party.");
-            return;
-        }
-        pendingInvites.put(target.getUniqueId(), leader.getUniqueId());
-        leader.sendMessage("§aInvitacion enviada a §e" + target.getName() + "§a.");
-        target.sendMessage("§aTe invitaron a la party de §e" + leader.getName() + "§a. Usa §e/party aceptar§a.");
-    }
+        parties.get(leaderId).add(targetId);
+        playerToLeader.put(targetId, leaderId);
 
-    public void acceptInvite(Player player) {
-        UUID leaderId = pendingInvites.remove(player.getUniqueId());
-        if (leaderId == null) {
-            player.sendMessage("§cNo tienes invitaciones pendientes.");
-            return;
+        String assigned = playerArena.get(leaderId);
+        if (assigned != null) {
+            playerArena.put(targetId, assigned);
         }
-        Party party = partiesByLeader.get(leaderId);
-        if (party == null) {
-            player.sendMessage("§cLa party ya no existe.");
-            return;
-        }
-        if (getPartyOf(player.getUniqueId()) != null) {
-            player.sendMessage("§cYa estas en una party.");
-            return;
-        }
-        party.getMembers().add(player.getUniqueId());
-        playerToLeader.put(player.getUniqueId(), leaderId);
-        for (UUID id : party.getMembers()) {
-            Player member = Bukkit.getPlayer(id);
-            if (member != null) {
-                member.sendMessage("§e" + player.getName() + " §ase unio a la party.");
-            }
-        }
+
+        leader.sendMessage("§aAñadiste a §e" + target.getName() + " §aa tu party.");
+        target.sendMessage("§aTe uniste a la party de §e" + leader.getName() + "§a.");
     }
 
     public void leaveParty(Player player) {
-        UUID uuid = player.getUniqueId();
-        Party party = getPartyOf(uuid);
-        if (party == null) {
-            player.sendMessage("§cNo estas en ninguna party.");
+        UUID playerId = player.getUniqueId();
+        UUID leaderId = playerToLeader.remove(playerId);
+        playerArena.remove(playerId);
+
+        if (leaderId == null) {
+            player.sendMessage("§cNo estás en ninguna party.");
             return;
         }
-        party.getMembers().remove(uuid);
-        playerToLeader.remove(uuid);
-        player.sendMessage("§eSaliste de la party.");
 
-        if (party.getLeader().equals(uuid)) {
-            partiesByLeader.remove(uuid);
-            for (UUID memberId : new ArrayList<>(party.getMembers())) {
-                playerToLeader.remove(memberId);
-                Player m = Bukkit.getPlayer(memberId);
-                if (m != null) {
-                    m.sendMessage("§cEl lider disolvio la party.");
+        if (leaderId.equals(playerId)) {
+            MatchSession session = activeSessions.remove(leaderId);
+            if (session != null) {
+                session.stop();
+            }
+            Set<UUID> members = parties.remove(leaderId);
+            if (members != null) {
+                for (UUID memberId : members) {
+                    playerToLeader.remove(memberId);
+                    playerArena.remove(memberId);
+                    Player member = Bukkit.getPlayer(memberId);
+                    if (member != null && !memberId.equals(playerId)) {
+                        member.sendMessage("§cEl líder disolvió la party.");
+                    }
                 }
             }
-            party.getMembers().clear();
+            player.sendMessage("§eHas disuelto tu party.");
+        } else {
+            Set<UUID> members = parties.get(leaderId);
+            if (members != null) {
+                members.remove(playerId);
+            }
+            player.sendMessage("§eSaliste de la party.");
         }
     }
 
-    public void setMode(Player leader, int hunters) {
-        Party party = partiesByLeader.get(leader.getUniqueId());
-        if (party == null) {
-            leader.sendMessage("§cSolo el lider puede cambiar el modo.");
-            return;
+    public void assignArena(UUID playerId, String arenaName) {
+        UUID leaderId = playerToLeader.getOrDefault(playerId, playerId);
+        String normalized = arenaName.toLowerCase();
+        playerArena.put(leaderId, normalized);
+
+        Set<UUID> members = parties.get(leaderId);
+        if (members != null) {
+            for (UUID memberId : members) {
+                playerArena.put(memberId, normalized);
+            }
         }
-        if (hunters < 1 || hunters > 10) {
-            leader.sendMessage("§cUsa un numero entre 1 y 10.");
-            return;
+    }
+
+    public ArenaManager.ArenaRoom getAssignedArena(UUID playerId) {
+        String arenaName = playerArena.get(playerId);
+        if (arenaName == null) {
+            UUID leaderId = playerToLeader.get(playerId);
+            if (leaderId != null) {
+                arenaName = playerArena.get(leaderId);
+            }
         }
-        party.setHuntersCount(hunters);
-        leader.sendMessage("§aModo configurado a §e1vs" + hunters + "§a.");
+        return plugin.getArenaManager().getArena(arenaName);
     }
 
     public void startMatch(Player leader) {
-        Party party = partiesByLeader.get(leader.getUniqueId());
-        if (party == null) {
-            leader.sendMessage("§cCrea una party primero con §e/party crear§c.");
+        UUID leaderId = leader.getUniqueId();
+        if (!parties.containsKey(leaderId)) {
+            createParty(leader);
+        }
+        if (activeSessions.containsKey(leaderId)) {
+            leader.sendMessage("§cYa tienes una partida activa. Usa §e/manhunt detener §cprimero.");
             return;
         }
-        List<Player> online = new ArrayList<>();
-        for (UUID id : party.getMembers()) {
-            Player p = Bukkit.getPlayer(id);
-            if (p != null && p.isOnline()) {
-                online.add(p);
+
+        ArenaManager.ArenaRoom room = getAssignedArena(leaderId);
+        if (room == null) {
+            room = plugin.getArenaManager().findFreeArena();
+        }
+        if (room == null) {
+            leader.sendMessage("§cNo hay salas libres en este momento (manh1, manh2, manh3 ocupadas).");
+            return;
+        }
+        if (room.isBusy() && !leaderId.equals(room.getActivePartyLeader())) {
+            leader.sendMessage("§cLa sala §e" + room.getName() + " §cestá ocupada. Elige otra con §e/sala <manh1|manh2|manh3>§c.");
+            return;
+        }
+
+        room.setActivePartyLeader(leaderId);
+        assignArena(leaderId, room.getName());
+
+        List<UUID> members = new ArrayList<>(parties.get(leaderId));
+        UUID runnerId = members.get(0);
+
+        for (UUID memberId : members) {
+            Player member = Bukkit.getPlayer(memberId);
+            if (member == null || !member.isOnline()) {
+                continue;
+            }
+            member.teleport(room.getSpawn());
+            member.setFallDistance(0f);
+
+            if (memberId.equals(runnerId)) {
+                member.sendMessage("§a¡Eres el §lRUNNER§a! Corre al abrirse la barrera.");
+            } else {
+                member.sendMessage("§c¡Eres un §lCAZADOR§c! Espera a que caiga la barrera.");
+                ItemStack compass = new ItemStack(Material.COMPASS);
+                ItemMeta meta = compass.getItemMeta();
+                if (meta != null) {
+                    meta.setDisplayName("§cBrújula Rastreadora");
+                    compass.setItemMeta(meta);
+                }
+                member.getInventory().addItem(compass);
             }
         }
-        if (online.size() < 2) {
-            leader.sendMessage("§cNecesitas al menos 2 jugadores conectados.");
-            return;
-        }
 
-        Collections.shuffle(online);
-        Player runner = online.get(0);
-        int huntersLimit = Math.min(party.getHuntersCount(), online.size() - 1);
-        List<Player> hunters = new ArrayList<>(online.subList(1, 1 + huntersLimit));
-
-        MatchSession session = new MatchSession(plugin, runner.getUniqueId());
-        for (Player h : hunters) {
-            session.addHunter(h.getUniqueId());
-        }
-
-        for (UUID participantId : session.getAllParticipants()) {
-            activeMatchesByPlayer.put(participantId, session);
-        }
-
+        MatchSession session = new MatchSession(plugin, plugin.getArenaManager(), room, runnerId);
+        activeSessions.put(leaderId, session);
         session.start();
     }
 
-    public MatchSession getMatch(UUID playerId) {
-        return activeMatchesByPlayer.get(playerId);
+    public void stopMatch(Player player) {
+        UUID leaderId = playerToLeader.getOrDefault(player.getUniqueId(), player.getUniqueId());
+        MatchSession session = activeSessions.remove(leaderId);
+        if (session == null) {
+            player.sendMessage("§cNo hay ninguna partida activa en tu party.");
+            return;
+        }
+        session.stop();
+        player.sendMessage("§ePartida detenida y sala §a" + session.getArena().getName() + " §eliberada.");
     }
 
-    public void unregisterMatch(MatchSession session) {
-        if (session == null) return;
-        for (UUID id : session.getAllParticipants()) {
-            activeMatchesByPlayer.remove(id);
-        }
+    public MatchSession getSessionByPlayer(UUID playerId) {
+        UUID leaderId = playerToLeader.getOrDefault(playerId, playerId);
+        return activeSessions.get(leaderId);
     }
 
-    public void endAllMatches(String reason) {
-        for (MatchSession session : new HashSet<>(activeMatchesByPlayer.values())) {
-            session.finish(reason);
+    public void clearAll() {
+        for (MatchSession session : activeSessions.values()) {
+            session.stop();
         }
-        activeMatchesByPlayer.clear();
+        activeSessions.clear();
+        parties.clear();
+        playerToLeader.clear();
+        playerArena.clear();
     }
 }
