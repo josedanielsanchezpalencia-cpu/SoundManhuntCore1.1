@@ -1,0 +1,14 @@
+name: SoundManhuntCore
+version: 1.0.0
+main: com.soundmanhunt.core.SoundManhuntPlugin
+api-version: "26.3"
+commands:
+  sala:
+    description: Entra a una plataforma en el vacio de manh1, manh2 o manh3
+    usage: /sala <manh1|manh2|manh3>
+  party:
+    description: Gestiona tu party de SoundManhunt
+    usage: /party <crear|invitar|iniciar|salir>
+  manhunt:
+    description: Controla partidas y salas de Manhunt
+    usage: /manhunt <sala|iniciar|detener>
